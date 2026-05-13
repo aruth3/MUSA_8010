@@ -3,7 +3,7 @@
     "path": "~/MUSA_8010/_quarto.yml",
     "project_path": "_quarto.yml",
     "type": "yaml",
-    "hash": "0",
+    "hash": "1271586764",
     "contents": "",
     "dirty": false,
     "created": 1778669772750.0,
@@ -11,14 +11,16 @@
     "relative_order": 1,
     "properties": {
         "source_window_id": "",
-        "Source": "Source"
+        "Source": "Source",
+        "cursorPosition": "2,18",
+        "scrollLine": "0"
     },
     "folds": "",
-    "lastKnownWriteTime": 1778667099,
+    "lastKnownWriteTime": 1778671434,
     "encoding": "UTF-8",
     "collab_server": "",
     "source_window": "",
-    "last_content_update": 1778667099,
+    "last_content_update": 1778671434374,
     "read_only": false,
     "read_only_alternatives": []
 }
