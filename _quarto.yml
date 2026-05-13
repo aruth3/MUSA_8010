@@ -1,0 +1,21 @@
+project:
+  type: website
+
+website:
+  title: "Mecklenburg Childcare Accessibility Capstone"
+  navbar:
+    left:
+      - href: index.qmd
+        text: Home
+      - href: Accessibility_Report.qmd
+        text: Report
+      - href: Documentation.qmd
+        text: Documentation
+        
+
+format:
+  html:
+    theme: lux
+    toc: true
+    code-fold: true
+

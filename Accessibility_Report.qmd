@@ -1,0 +1,220 @@
+---
+title: "Creating a Reproducible Childcare Accessibility Documentation for Mecklenburg County"
+author: "Angel Rutherford"
+format:
+  pdf:
+    toc: true
+    number-sections: true
+    mainfont: "Times New Roman"
+    fontsize: 11pt
+    geometry: margin=1in
+date: today
+abstract-title: "Abstract"
+abstract: "Potochnick et al. (2024) identified persistent disparities in early care and education (ECE) access among Black and Latino families in Mecklenburg County, North Carolina, finding that geographic proximity alone could not account for why these families underutilized subsidized childcare. Their landscape assessment mapped the distribution of prenatal through age three services but noted that a surface-level spatial analysis obscures the more nuanced access barriers families face in practice. This study builds directly on that foundation, arguing that a robust measure of effective access must move beyond facility location to account for licensed capacity relative to child population, quality as measured by North Carolina's star-rated licensing system, subsidy acceptance, and mode of transportation available to a household. Using a Two-Step Floating Catchment Area (2SFCA) model applied at the census block group level, this analysis constructs a series of accessibility scores that isolate these dimensions of effective access and examines their spatial distribution alongside sociodemographic vulnerability indicators."
+bibliography: references.bib
+reference-section-title: "References"
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+# Acknowledgements 
+
+This analysis builds directly on the landscape assessment conducted by
+@potochnick2024 through the UNC Charlotte Social Aspects of Health Initiative,
+whose findings on early care and education access disparities among Black and
+Latino families in Mecklenburg County motivated the methodological extensions
+undertaken here.
+
+I would like to thank and acknowledge Dr. Eric Delmelle for their guidance,
+patience, and methodological feedback throughout the development of this
+project.
+
+# Introduction
+
+Charlotte ranks as the least economically mobile among the 50 largest US cities,
+with only 4.4% of children from low-income families likely to become high-income
+adults (Chetty et al., 2014, as cited in @potochnick2024). Despite significant
+county investment in early care and education infrastructure following community
+calls for action, Black and Latino children, 32% and 36% of whom respectively
+live in poverty in Mecklenburg County, remain disproportionately underserved by
+the ECE system. @potochnick2024 conducted a landscape assessment of prenatal
+through age three services in Mecklenburg County, finding that while geographic
+access to facilities did not differ significantly by neighborhood socioeconomic
+status, Black and Latino families continued to underutilize available services.
+Their analysis concluded that spatial proximity alone was insufficient to explain
+these disparities, pointing toward unmeasured dimensions of effective access
+(quality, affordability, and transportation) as likely barriers.
+
+This study extends that work by operationalizing those dimensions directly. The
+2SFCA method, originally proposed by @luo2003, was selected for its ability to
+simultaneously account for supply capacity and demand population within a travel
+time threshold, producing a ratio of available seats per child rather than a
+simple count of nearby facilities. Building on enhancements to the 2SFCA family
+documented by @stacherl2022, this analysis incorporates multimodal travel time
+differences following @mao2013, quality-based destination attractiveness
+following @delmelle2015, and facility-level attribute filtering to isolate
+subsidized high-quality supply.
+
+# Data and Methods
+
+## Travel Time Thresholds
+
+Travel time thresholds were derived empirically from the 2022 National Household
+Travel Survey (NHTS), following the methodology of @blumenberg2023. After
+filtering to morning weekday trips made by adults in households with young
+children using school or daycare-related trip purpose codes, the weighted
+distribution of travel times was examined. The right-skewed distribution
+(weighted median: 13 minutes, weighted mean: 14.4 minutes) indicated that the
+median was a more representative threshold than the mean. Examining medians by
+urban-rural origin classification, suburban and urban trips, classifications
+most characteristic of Mecklenburg County, both returned weighted medians of
+10 and 15 minutes respectively, establishing the car-based cutoff. The
+30-minute transit threshold was set conservatively given the absence of transit
+users in the NHTS sample and general behavioral literature on transit travel
+times.
+
+
+## Facility Data
+
+Two datasets were combined by shared permit ID to construct a complete facility
+profile. Mecklenburg County's open data portal provided facility identification
+and licensed capacity, while the City of Charlotte's Planning and Development
+portal contributed quality indicators including demerit counts, sanitation
+ratings, and subsidy acceptance status. Facilities ineligible for a star rating
+under North Carolina's QRIS system (summer day camps, provisional
+licenses, and temporary licenses) were excluded. The resulting dataset of 496
+rated facilities was classified into three quality tiers: Low (1–2 star), Mid
+(3 star), and High (4–5 star).
+
+## Demographic Data
+
+Block group level sociodemographic characteristics were drawn from the 2023 ACS
+5-year estimates via the `tidycensus` package. Variables were selected across
+four dimensions theoretically linked to childcare access barriers: racial and
+ethnic composition, economic vulnerability, family structure, and transportation
+constraints. Raw counts were converted to proportions to ensure comparability
+across block groups of different sizes.
+
+## Accessibility Modeling
+
+Travel time matrices were computed using r5r with OpenStreetMap network data and
+the 2024 CATS GTFS feed. Arrival time was set to 10:00 AM on October 16, 2024,
+a representative weekday within the valid GTFS range, using
+`arrival_travel_time_matrix()` to reflect the fixed-deadline nature of daycare
+drop-offs. Six 2SFCA models were run, three supply stratifications (all
+facilities, high-tier only, high-tier subsidized) by two modes (car, transit),
+using binary decay functions at their respective thresholds. Scores were joined
+back to block group demographics for spatial and multivariate analysis.
+
+## Reproducibility and Document Design
+
+This report was developed using @quarto to support reproducible computational
+workflows integrating statistical analysis, spatial processing, and document
+generation within a single source file. Formatting and graphical customization
+approaches were informed by Quarto documentation and ggplot2 reference materials
+[@wickham2016], particularly with respect to figure layout, typography, legend
+design, and accessibility-oriented visual presentation. These resources aided
+in producing a document structure intended to improve transparency, readability,
+and reproducibility of both analytical methods and visual outputs.
+
+# Results
+
+## Distributional Analysis
+
+Car-based accessibility scores show modest reductions as supply is filtered from
+all daycares (median: 0.54) to high-tier only (0.48) to high-tier subsidized
+(0.28). The overall distribution shape remains similar across all three,
+suggesting that high-rated providers are distributed broadly enough that quality
+filtering does not dramatically reshape who has spatial access by car. The
+shrinking right tail in the subsidized scores indicates that block groups with
+the highest overall access do lose some advantage when only subsidy-accepting
+facilities are considered.
+
+Transit-based scores tell a markedly different story. Medians drop to 0.40,
+0.33, and 0.16 across the same three stratifications, with distributions heavily
+concentrated near zero. For most block groups, meaningful transit access to
+quality subsidized care is effectively nonexistent within a 30-minute trip.
+
+
+## Spatial Analysis
+
+Car-based choropleth maps show broad mid-range access across the county with the
+highest scores concentrated in the urban core and inner suburban ring.
+Restricting supply to high-tier providers narrows this concentration, and
+filtering to subsidized care produces a pronounced hollowing out of the
+accessibility surface in peripheral block groups — a pattern consistent with the
+subsidy distribution finding above.
+
+Transit maps are dominated by near-zero scores across the county regardless of
+supply stratification, with meaningful access confined to a narrow cluster of
+block groups near the urban core. This reflects the radial structure of
+Charlotte's bus network, which concentrates service along corridors leading into
+uptown rather than distributing it across the county.
+
+
+# Principal Component Analysis
+
+To examine whether accessibility disadvantage clusters systematically with
+demographic vulnerability, a PCA was conducted on block group level
+sociodemographic characteristics alongside the subsidized car-based
+accessibility score. Variables were selected through iterative permutation
+testing.
+
+The correlation table confirms that component 1 is primarily a socioeconomic and
+racial disadvantage axis. The percentage of Black residents and household
+poverty rate load strongly and positively while the percentage of white
+residents loads strongly negative, reflecting the persistent spatial
+intersection between racial composition and economic vulnerability. This
+dimension alone accounts for 35.2% of total variance.
+
+Component 3 is perhaps the most analytically interesting. The strong positive
+correlation between the percentage of Hispanic residents and population density
+suggests that Hispanic families in Mecklenburg County are concentrated in
+denser, more urban block groups.
+
+In component 2, the moderate negative correlation between Hispanic composition
+and the subsidized car-based accessibility score on this same dimension
+indicates that despite this inferrable urban concentration Hispanic block groups
+tend to have lower access to high-quality subsidized care by car.
+
+# Limitations
+
+The `SubsidyApp` field contained substantial missing records, meaning subsidized
+accessibility scores likely understate true access and should be treated as
+conservative lower bounds. The analysis uses licensed capacity as the sole
+supply measure and does not account for enrollment, tuition rates, languages
+spoken, or age ranges served. Block group centroids introduce positional error
+as origin points, particularly in larger peripheral block groups. The CATS GTFS
+feed dates from 2024 while demographic and facility data are from 2023,
+introducing a potential temporal mismatch in transit scores. The NHTS analysis
+that informed travel time thresholds was based on a small filtered sample
+(n = 139) with no transit users represented, meaning the 30-minute transit
+threshold is a conservative estimate rather than an empirically grounded
+behavioral cutoff. ACS estimates at the block group level carry larger margins
+of error than county or tract level estimates, particularly for smaller subgroup
+variables.
+
+# Conclusion
+
+This analysis extends @potochnick2024 by moving beyond facility location mapping
+toward a more nuanced measure of effective childcare accessibility. Three
+findings emerge consistently. First, quality filtering produces modest
+accessibility reductions for car-owning families, suggesting reasonable
+geographic coverage of high-rated providers across the county. Second, filtering
+to subsidized care produces meaningful reductions particularly in peripheral
+block groups, indicating that subsidy-dependent families face a more constrained
+realistic option set than raw facility counts suggest. Third, transit-based
+accessibility to quality subsidized care is structurally unavailable for the
+majority of Mecklenburg County block groups, a finding that points to
+Charlotte's transit network as a barrier operating independently of facility
+quality or distribution.
+
+The PCA corroborates these findings, confirming that racial composition is the
+dominant axis of block group variation while subsidized accessibility loads on a
+partially independent dimension. This partial independence is the key analytical
+contribution: it suggests that the spatial barriers to quality subsidized care
+are not simply a reflection of vulnerability but a distinct dimension that could
+potentially be targeted through race-based interventions.
+

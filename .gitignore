@@ -1,0 +1,6 @@
+/.quarto/
+**/*.quarto_ipynb
+data/*.pbf
+data/*.mapdb*
+data/network.dat
+rjavaenv/windows/x64/21/lib/modules

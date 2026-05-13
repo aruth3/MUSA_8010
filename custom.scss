@@ -1,0 +1,24 @@
+
+
+
+/*-- scss:rules --*/
+
+.callout-note {
+  border-left-color: #1BB6AFFF !important;
+  
+  .callout-header {
+    background-color: #aadce0 !important;
+  }
+}
+
+.callout-important {
+  border-left-color: #D7A786FF !important;
+  
+  .callout-header {
+    background-color: #F0E7DDFF !important;
+  }
+}
+
+.quarto-title h1.title {
+  color: #01000EFF !important;
+}

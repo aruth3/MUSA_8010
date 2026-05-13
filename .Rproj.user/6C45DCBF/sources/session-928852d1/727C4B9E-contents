@@ -1,0 +1,1594 @@
+---
+title: "Modeling Daycare Accessibility in Mecklenburg County, NC Using `accessibility` and `r5r`"
+subtitle: "A Reproducible Documentation"
+author:
+  - name: Angel Rutherford
+    affiliations:
+      - name: University of Pennslyvania
+date: today
+abstract: "Potochnick et al. (2024) identified persistent disparities in early care and education (ECE) access among Black and Latino families in Mecklenburg County, North Carolina, finding that geographic proximity alone could not account for why these families underutilize subsidized childcare. Their landscape assessment mapped the distribution of prenatal through age three services but noted that a surface-level spatial analysis obscures the more nuanced access barriers families face in practice. This study builds directly on that foundation, arguing that a robust measure of effective access must move beyond facility location to account for the factors that shape whether a facility is a realistic option for a given family, including licensed capacity relative to child population, quality as measured by North Carolina's star-rated licensing system, subsidy acceptance, and the distance based on mode of transportation available to a household. Using a Two-Step Floating Catchment Area (2SFCA) model applied at the census block group level, this analysis constructs a series of accessibility scores that isolate these dimensions of effective access and examines their spatial distribution alongside sociodemographic vulnerability indicators outlined in the original work."
+format:
+  html:
+    theme:
+    - lux
+    - custom.scss
+    toc: true
+    toc-depth: 3
+    toc-location: right
+    toc-title: "Contents"
+    code-fold: false
+    code-overflow: wrap
+    fig-align: center
+    embed-resources: true
+    smooth-scroll: true
+    highlight-style: arrow
+    df-print: paged
+bibliography: references.bib
+reference-section-title: "References"
+execute:
+  warning: false
+  message: false
+  echo: true
+  progress: false
+  cache: true
+---
+
+# Acknowledgements 
+
+This analysis builds directly on the landscape assessment conducted by @potochnick2024 through the UNC Charlotte Social Aspects of Health Initiative, whose findings on early care and education access disparities among Black and Latino families in Mecklenburg County motivated the methodological extensions undertaken here.
+
+I would like to thank and acknowledge Dr. Eric Delmelle for their guidance, patience, and methodological feedback throughout the development of this project.
+
+---
+
+# Data Exploration and Preparation
+
+
+The following packages are required to reproduce this analysis:
+```{r}
+#| message: false
+#| warning: false
+
+# Data Access
+library(tidycensus)   # ACS demographic data via Census API
+library(osmextract)   # OpenStreetMap network data for r5r routing
+
+# Data Manipulation
+library(tidyverse)    # Core data wrangling (includes dplyr, tidyr, readr)
+library(readxl)       # Reading Excel codebook files
+library(sf)           # Spatial data manipulation
+library(tidytransit)  # GTFS transit feed parsing
+library(classInt)     # Fisher-Jenks classification intervals
+library(srvyr)        # Tidy interface for survey weighted estimates
+
+# Spatial Modeling
+library(accessibility) # 2SFCA floating catchment area models
+library(r5r)           # Multimodal travel time matrix computation
+
+# Dimensionality Reduction
+library(FactoMineR)    # Principal Component Analysis
+library(factoextra)    # PCA visualization utilities
+
+# Visualization
+library(ggplot2)       # Core plotting
+library(ggrepel)       # Non-overlapping label placement
+library(patchwork)     # Multi-panel plot composition
+library(showtext)      # Custom Google font rendering
+library(gt)            # Publication quality tables
+library(knitr)         # Document rendering utilities
+
+census_api_key(Sys.getenv("CENSUS_API_KEY")) # Must have Census Api Key
+
+```
+
+```{r}
+#| echo: false
+
+font_add_google("Outfit", "Outfit")
+font_add_google("Cabin", "Cabin")
+showtext_auto()
+
+bar_theme <- theme_minimal(base_size = 16) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    plot.title         = element_text(family = "Outfit", face = "bold", size = 20),
+    plot.background    = element_rect(fill = "white", color = NA),
+    panel.background   = element_rect(fill = "white", color = NA),
+    axis.title         = element_text(family = "Cabin", size = 16),
+    axis.text          = element_text(family = "Cabin", size = 14),
+    panel.grid.major.y = element_blank()
+  ) 
+
+map_theme <- theme_void() +
+  theme(
+    plot.title  = element_text(family = "Outfit", face = "bold",
+                               size = 18, hjust = 0.5),
+    plot.margin = margin(5, 5, 5, 5)
+  )
+
+```
+
+
+## National Household Travel Survey (NHTS) Travel Behavior Analysis
+
+Cut-off times for the 2SFCA model and travel time matrices were derived from interpretation of travel behavior patterns from the 2022 National Household Travel Survey. The analytic approach is informed by the methodology used by @blumenberg2023.
+
+
+The NHTS is a complex survey structured around four separate units of analysis (household, person, trip, and vehicle) each with its own data file and corresponding codebooks, available for download through the NHTS' [documentation page](https://nhts.ornl.gov/documentation). The separation reflects the fact that these units operate at different levels of measurement. For example, a single household contains multiple persons and each person may make their own individual trips. Although many of the same variables can be found across all units, certain variables meaningful at one level may not exist in another.  
+
+
+Each unit has a corresponding set of temporal weights (weekly, weekday, and weekend)
+that scale the sample to a nationally representative population estimate. This analysis 
+uses the 5-day weekday trip weight (`WTTRDFIN5D`) since daycare drop-offs are expected to occur during the weekday rather than the weekend.
+
+
+All four files share the `HOUSEID` field as a common key, with progressively more 
+granular identifiers (`PERSONID`, `VEHICLEID`) enabling joins and upward aggregation across units.
+
+
+### Loading and exploring NHTS Codebooks
+
+Each codebook is stored as a separate sheet within a single Excel file and can be loaded 
+individually by setting the `sheet =` parameter in `read_excel` to the desired unit.
+
+```{r}
+
+# Load analytically relevant NHTS 2022 codebooks before data 
+hhold <- read_excel("./data/codebook.xlsx", sheet="Household") 
+trips <- read_excel("./data/codebook.xlsx", sheet="Trip")      
+                                                                
+```
+
+
+
+Before selecting variables, use `glimpse()`, `head()`, or `print()` can allow you to inspect the raw structure of each codebook sheet. Originally these codebooks have 7 total columns, however, for this analysis, only three columns will be used (`Name`, `Label`, and `Code\Range`) to reduce noise. The codebooks are officially reduced to this three column format in section 2.4. 
+
+
+```{r}
+#| echo: false
+
+trips %>%
+  head(4) %>%
+  gt() %>%
+  tab_header(title = md("`head(4)` Output of NHTS 2022 Trip Codebook Structure")) %>%
+  tab_options(
+    heading.align = "left") %>%
+  tab_style(style = cell_text(
+    weight = "bold"
+  ),
+  location = cells_title(groups = "title")
+  )
+
+```
+
+
+Using `filter()` from the `dpylr` library on the Label column can aid in searching for potentially relevant variables by keyword (e.g. for example `filter(str_detect(Label, "transportation")`).
+
+
+
+### Selecting Variables 
+
+Variables were selected to serve two purposes: to aid in filtering the dataset to morning daycare drop-off trips made by parents of young children, and capturing travel context relevant to the Charlotte-Mecklenburg study area. The chosen variables include the number of young children in the household (`YOUNGCHILD`), day of week (`TRAVDAY`), departure time (`STRTTIME`), and summary of the trip's purpose (`WHYTRP1S`). The urban-rural classification of both trip origin and destination (`OBHUR`, `DBHUR`) was retained given the county's mix of urban, suburban, and rural geographies, where trip patterns and available infrastructure differ substantially. Total travel time (`TRVLCMIN`) is the primary outcome, and `WTTRDFIN5D` applies the appropriate weekday trip weight throughout.
+
+
+::: {.callout-important title="Small Sample Caveat"}
+After filter the sample size was reduced significantly (n = 139). Results should be regarded as exploratory.
+:::
+
+
+```{r}
+
+# Pre-define variables by unit 
+
+trip_col <- c("HOUSEID",     # Unique Household Identifier 
+              "PERSONID",    # Response Number out of Total Household 
+              "R_AGE",       # Age 
+              "TRAVDAY",     # Day of the Week
+              "STRTTIME",    # Departure Time (24 HR Scale)
+              "TRVLCMIN",    # Total Travel Time
+              "OBHUR",       # Origin Urban-Rural Classification
+              "DBHUR",       # Destination Urban-Rural Classification 
+              "WHYTRP1S",    # Trip Purpose Summary 
+              "WTTRDFIN5D")  # Trip-Level Weights 
+
+
+hhold_col <- c("HOUSEID",
+               "YOUNGCHILD") # Number of Young Children per Household  
+
+```
+
+
+::: {.callout-note title="Variable Selection"}
+Other variables that might indicate differences in travel time thresholds, namely mode of transportation (`TRIPMODE`) and household vehicle count (`HHVEHCNT`), were excluded due to insufficient variation in responses. Privately owned vehicles accounted for 90.6% of trip modes (n = 126), with no respondents using public transit, and zero-vehicle households represented just 3.6% of the sample (n = 5). Cell sizes this small make it difficult to draw reliable distinctions where the implications, particularly around transit dependent and car-free households, carry meaningful equity consequences.
+:::
+
+
+### Building Usable Codebook
+
+The NHTS CSV format only assigns variable names and descriptive labels to the first coded response for each variable, leaving subsequent rows unlabeled. Each variables assigns its own set of numeric codes starting sequentially from 1 meaning the same numeric value can mean entirely different things between variables. The `fill()` function from the `tidyr` package propagates the variables and labels to all associated response codes, making it easier to group and defined the numeric codes by variable. 
+
+```{r}
+
+trip_codes <- trips %>%
+  fill(Label, Name, .direction = "down") %>%  # .direction = "down" fills downwards and automatically 
+  select(Name, Label, `Code / Range`) %>%     # adjusts when it encounters a new value
+   filter(Name %in% trip_col)
+
+hhold_codes <- hhold %>%
+  fill(Label, Name, .direction = "down") %>%
+  select(Name, Label, `Code / Range`) %>%
+  filter(Name %in% hhold_col)
+
+```
+
+
+```{r}
+#| echo: false
+
+trip_codes %>%
+  head(4) %>%
+  gt() %>%
+  tab_header(title = md("`head(4)` Output of NHTS Trip Codebook After Using `fill()`")) %>%
+  tab_options(
+    heading.align = "left") %>%
+  tab_style(style = cell_text(
+    weight = "bold"
+  ),
+  location = cells_title(groups = "title")
+  )
+
+```
+
+
+
+### Load and Combine Raw Survey Data
+
+The raw survey data is stored in separate CSV files distributed as a single zipped folder, downloadable from the NHTS website's [downloads page](:https://nhts.ornl.gov/downloads). Once unzipped, each unit of analysis has its own file which can be loaded individually and immediately subset to the pre-defined variable lists to reduce noises.
+
+```{r}
+
+# Load raw NHTS 2022 survey data
+trip_data   <- read.csv("./data/tripv2pub.csv") %>%
+  select(all_of(trip_col))                           # select predefined variables
+
+hhold_data  <- read.csv("./data/hhv2pub.csv") %>%
+  select(all_of(hhold_col))
+
+
+# Merge datasets into single dataset by shared HOUSEID variable column
+joined_data <- trip_data %>%
+  left_join(hhold_data, by = "HOUSEID")
+
+```
+
+
+
+
+### Applying Definitons to Codes
+
+With variable lists and raw data in place, the next step is converting the codebook into a format that can be used to translate numeric codes into readable labels for plotting and filtering. This requires three steps: parsing the `Code / Range` column into separate code and definition fields, restructuring the result into a manual dictionary-like list, and using that look-up dictionary to attach the labelled columns to the raw dataset.
+
+```{r}
+
+# Parse the Code / Range into to separate codes and definition into their own columns
+# e.g. "01 = Car" becomes code = 01, definition = "Car"
+labelled_codes <- bind_rows(trip_codes, hhold_codes) %>%
+  separate(`Code / Range`, into = c("code", "definition"), sep = "=") %>%
+  mutate(code = as.numeric(code)) # Convert codes to numeric to remove the leading zeros
+                                  # e.g. "01" becomes "1"
+
+
+
+# Helper function 
+label_lookup <- labelled_codes %>%
+  split(.$Name) %>%          # Creates mini dfs for each variable 
+  lapply(function(df) {      # Across all mini dfs it creates a named vector 
+    setNames(df$definition, as.character(df$code)) # Sets the corresponding code as the
+  })                                               # definition's name 
+
+
+# Attach code definitions to survey data as new *_label columns 
+data_labelled <- joined_data %>%
+  mutate(
+    across(
+      all_of(names(label_lookup)),
+      ~ label_lookup[[cur_column()]][as.character(.)],
+      .names = "{.col}_label"
+    )
+  )
+
+```
+
+
+### Creating a Survey Design Object
+
+Weighted estimates were applied using the official `srvyr` [documentation cheat sheet](https://rstudio.github.io/cheatsheets/srvyr.pdf). Section 7 of the [2022 NHTS User's Guide](https://nhts.ornl.gov/media/2022/doc/2022%20NextGen%20NHTS%20User's%20Guide%20V201_PubUse.pdf) suggests using the weighted estimates to allow results to generalizes to the national population rather than just the sample size. 
+
+
+```{r}
+
+# Turned labelled data into survey design object
+data_weighted <- data_labelled %>%
+  as_survey_design(
+    ids = HOUSEID,
+    weights = WTTRDFIN5D
+  ) %>%
+
+# Applying filtering choices described in section 2.2 
+  filter(YOUNGCHILD > 0) %>%                    # Ensure young children present
+  filter(TRAVDAY %in% c(2, 3, 4, 5, 6)) %>%     # Weekdays only
+  filter(between(STRTTIME, 600, 1000)) %>%      # Morning peak hours
+  filter(WHYTRP1S %in% c(20, 70)) %>%           # School-related trips
+  filter(R_AGE >= 18)                           # Adults only
+
+```
+
+
+
+::: {.callout-important title="Trip Summary as a Proxy"}
+NHTS' `WHYTRP1S` does not have an exclusive code for daycare drop-offs. Codes 20 (School/Daycare/Religious activity) and 70 (Dropping someone off) are used as a proxy, meaning the sample likely includes some non-daycare trips that could not be isolated without additional filtering. In addition, the survey defines daycare as both informal and formal childcare arrangements which means non-licensed care also is included.
+:::
+
+
+To determine an appropriate travel time threshold for the accessibility model, the weighted distribution of childcare-related trip durations was visualized. 
+```{r}
+#| echo: false
+#| fig-width: 13
+#| fig-height: 7
+
+data_weighted %>%
+  summarize(
+    w_mean   = survey_mean(TRVLCMIN, na.rm = TRUE),
+    w_median = survey_median(TRVLCMIN, na.rm = TRUE)
+  ) -> w_stats
+
+data_weighted$variables %>%
+  ggplot(aes(x = TRVLCMIN, weight = WTTRDFIN5D)) +
+  geom_histogram(binwidth = 5, fill = "#329999", 
+                 color = "white", alpha = 0.9) +
+  geom_vline(xintercept = w_stats$w_median,
+             color = "#FFEB38", linetype = "dashed", linewidth = 0.8) +
+  annotate("text", x = w_stats$w_median - 2, y = Inf, vjust = 2,
+           label = paste0("Median: ", round(w_stats$w_median, 1), " min"),
+           color = "#E6C700", size = 6, family = "Cabin", hjust = 1) +
+   geom_vline(xintercept = w_stats$w_mean,
+             color = "#A1DAB4", linetype = "dashed", linewidth = 0.8) +
+  annotate("text", x = w_stats$w_mean + 10, y = Inf, vjust = 2,
+           label = paste0("Mean: ", round(w_stats$w_mean, 1), " min"),
+           color = "#A1DAB4", size = 6, family = "Cabin", hjust = 1) +
+  scale_y_continuous(
+  labels = scales::label_number(scale = 1e-6, suffix = "M"),
+  expand = expansion(mult = c(0, 0.1))
+)+
+  labs(title    = "The Right Skewed Distribution of Travel Times Suggest Weighted Median\nmay be a more Representative Cut-off Threshold than Mean",
+       x        = "Travel Time (minutes)",
+       y        = "Weighted Estimate of Population",
+       caption  = "Source: NHTS 2022. Weighted estimates.") +
+  bar_theme
+
+ggsave
+
+```
+
+The right-skewed distribution suggests the weighted median is a more representative cutoff than the mean, as the mean is pulled upward by a small number of unusually long trips.
+
+Travel times were further examined by trip origin urban-rural classification to assess whether a single threshold could reasonably represent Mecklenburg County's mixed geography. 
+```{r}
+#| echo: false
+#| fig-width: 13
+#| fig-height: 7
+
+data_weighted %>%
+  group_by(OBHUR_label) %>%
+  summarize(
+    median_time = survey_median(TRVLCMIN, na.rm = TRUE),
+    n           = n(),
+    .groups     = "drop"
+  ) %>%
+  filter(!is.na(OBHUR_label)) %>%
+  mutate(highlight = median_time == max(median_time)) %>%
+  ggplot(aes(x     = reorder(OBHUR_label, median_time),
+             y     = median_time,
+             fill  = highlight)) +
+  geom_col(width=0.96) +
+  geom_text(aes(label = paste0("n=", n)), hjust = -0.2, size = 5) +
+  coord_flip() +
+  scale_fill_manual(values = c(`TRUE` = "#329999", `FALSE` = "#cce5e5")) +
+  guides(fill = "none") +
+  labs(
+    title = "Trips Orignating in Suburban and Second City Areas had the Longest Median\nTravel Times (15 mins)",
+    x     = NULL,
+    y     = "Weighted Median Travel Time (minutes)",
+    caption = "Source: NHTS 2022. Weighted estimates (WTTRDFIN5D)."
+  ) +
+  bar_theme
+
+
+```
+
+Urban and Suburban the classifications which were most characteristic of the study area returned weighted medians of 10 and 15 minutes respectively. From this, the cut-off threshold for the drive travel time matrix was derived (15 minutes) in order to be inclusive of the entire study area.
+
+
+
+## Exploring State Daycare Facilitiy Data
+
+Due to the scarcity of publicly available data on daycare facility attributes, two datasets were joined on shared permit IDs to construct a more complete facility profile. Licensed facility records from Mecklenburg County's [open data portal](https://maps.mecklenburgcountync.gov/openmapping/data.html#daycare) provided core identification fields and quantities for analysis (facility name, ownership, address, and baseline capacity) while data from City of Charlotte's Planning and Development [open data portal](https://data.charlottenc.gov/datasets/charlotte::day-care/about) contributed quality indicators including demerit counts, sanitation ratings, and subsidy acceptance status.
+
+Five license types are excluded from this analysis because they are ineligible for a star rating under North Carolina's Quality Rating and Improvement System (QRIS), a 1 to 5 scale administered by the NC Department of Health and Human Services (NCDHHS) that measures overall program quality. Since this analysis centers on comparing accessibility across quality tiers, facilities without a star rating fall outside its scope. Eligibility criteria are outlined in [Chapter 9 of the NC DHHS Child Care Rules](https://ncchildcare.ncdhhs.gov/Portals/0/documents/pdf/C/Chapter_9_Child_Care_Rules_Effective_July_1-2025.pdf). Summer Day Camps are exempt from licensing requirements under NC law because they operate as recreational programs for fewer than four consecutive months. Some choose to become licensed voluntarily to access subsidized childcare funding, but they are not subject to the same standards as year-round providers. Any facilities with Provisional, Temporary, Temporary FCCH, and GS 110-106 designations were assigned such as a reflection of either not completing the full licensing process or operating under a statutory exemption. Simply put, none are eligible for a star rating.
+
+::: {.callout-important title="Public Data Quality"}
+While the City of Charlotte Planning and Development dataset contains over 700 records, a substantial portion of entries were missing facility names and location information. The Mecklenburg County licensed facility dataset was used as the primary frame of reference, with the Planning and Development records joined to it by permit ID to append quality indicators. Any Planning and Development records without a matching permit ID in the County dataset were excluded, prioritizing completeness and spatial accuracy over total record count. It should also be noted that the `SubsidyApp` field contained a substantial number of missing records, meaning the subset of facilities identified as accepting subsidies likely understates the true count. As a result, accessibility scores for subsidized care may be much higher than reflected in this analysis.
+:::
+
+### Loading and Cleaning Daycare Data
+
+Since the daycare file is part of a larger `.gpkg` file, that contains multiple layers so the daycare layer must be called explicitly via the `layer=` argument in `st_read()`.
+
+```{r}
+#| output: false
+
+# Load daycare data from County's local government portal
+county_data <- st_read("./data/PointsofInterest.gpkg", layer = "Daycare") # reference layer explicitly
+
+# Remove unrated categories
+clean_county_data <- county_data %>%                                      
+  filter(foptype != "Summer Day Camp") %>%
+  filter(!ppermit %in% c("GS 110-106", "Temporary FCCH License", "Temporary License", "Summer Day Camp License", "Prov License"))
+
+```
+
+
+```{r}
+#| output: false
+
+# Load in daycare data from Charlotte's Department of Planning and Development
+planning_data <- st_read("./data/Day_Care.shp") %>%
+  st_drop_geometry() 
+
+# Join with County data
+full_data <- clean_county_data %>%
+  left_join(planning_data, by= c("ffacid" = "StatePermi")) # Shared unique permit ID columns
+
+
+```
+
+
+### Exploring Distribution and Capacity of Facilities by Star-Rating
+
+Rather than measuring accessibility to all licensed providers equally, this analysis draws on the concept of destination attractiveness introduced by @delmelle2015, who argue that accessibility models should account for the likelihood that people will choose a destination based on its qualities rather than simply its proximity. 
+
+
+Star ratings are therefore treated not just as a descriptive variable but as a proxy for destination attractiveness. A three-tier classification (1–2 star, 3 star, 4–5 star) is created to distinguish meaningfully between the different levels of supply. Although NC DHHS issues star ratings separately by operational type with distinct designations for center-based and family childcare home licenses, these are collapsed into single tiers by star-rating only. Licensed capacity (`pcap`) is retained as the supply measure of the supply-demand accessibility model.
+
+
+```{r}
+
+# Collapse individual permit ratings into three interpretable quality tiers
+full_data <- full_data %>%
+  mutate(
+    quality_tier = case_when(
+      str_detect(ppermit, "(Four|Five)") ~ "High",
+      str_detect(ppermit, "Three")       ~ "Mid",
+      str_detect(ppermit, "(One|Two)")   ~ "Low"
+    )
+  )
+
+```
+
+
+::: {.callout-note title="What This Analysis Cannot Account For"}
+Neither original dataset includes information on key considerations such as languages spoken, tuition rates, or age range served. These factors substantially shape whether a facility is accessible in practice. The accessibility scores produced here should be interpreted as a measure of physical and spatial access to rated capacity rather than a comprehensive measurement of affordable or available care.
+:::
+
+
+Before modeling accessibility, it is worth understanding how quality tier relates to the actual supply of licensed seats. If high-rated facilities were systematically smaller than lower-rated ones, restricting the supply measure to high-tier providers would introduce a capacity penalty on top of the spatial one. The chart below shows that this is not the case; while high-tier providers make up 80% of all licensed facilities and their average capacity of 97.9 seats is nearly identical to low-tier providers that only make up 7.3% of providers. 
+
+```{r}
+#| echo: false
+#| fig-width: 17
+#| fig-height: 8
+
+p1 <- full_data %>%
+  count(quality_tier, name = "n") %>%
+  mutate(
+    pct       = round(n / sum(n) * 100, 1),
+    highlight = pct == max(pct)          
+  ) %>%
+  ggplot((aes(x = reorder(quality_tier, pct), y = pct, fill = highlight))) +
+  geom_col() +
+  geom_text(aes(label = paste0(pct, "%")),
+            hjust = -0.2, size = 5, family = "Cabin") +
+  coord_flip() +
+  scale_fill_manual(values = c(`TRUE` = "#329999", `FALSE` = "#cce5e5")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.3))) +
+  guides(fill = "none") +
+  labs(title = "Share of providers by star rating",
+       x = NULL, y = "% of licensed providers") +
+  bar_theme
+
+p2 <- full_data %>%
+  group_by(quality_tier) %>%
+  summarise(
+    mean_cap = round(mean(pcap, na.rm = TRUE), 1),
+    n        = n(),
+    .groups  = "drop"
+  ) %>%
+  mutate(highlight = mean_cap == max(mean_cap)) %>%  
+  ggplot(aes(x = reorder(quality_tier, mean_cap), y = mean_cap, fill = highlight)) +
+  geom_col() +
+  geom_text(aes(label = paste0(mean_cap, " seats\nn=", n)),
+            hjust = -0.1, size = 5, family = "Cabin") +
+  coord_flip() +
+  scale_fill_manual(values = c(`TRUE` = "#329999", `FALSE` = "#cce5e5")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.3))) +
+  guides(fill = "none") +
+  labs(title = "Average capacity by star rating",
+       x = NULL, y = "Average number of seats") +
+  bar_theme
+
+p1 + p2 +
+  plot_layout(ncol = 2, widths = c(2,2)) +
+  plot_annotation(
+    title   = "Higher Rated Providers are more Numerous but share a Similar Average Capacities with\nLow Rated facilities",
+    caption = "Source: NC DHHS via Mecklenburg County Open Data Portal, August 2023.",
+    theme   = theme(plot.title = element_text(family = "Outfit", 
+                                              face = "bold", size = 24))
+  )
+
+```
+
+This means that differences in accessibility scores across quality tiers reflect the spatial distribution and availability of providers rather than systematic differences in their size. Although high-rated providers make up the majority of licensed facilities, where high-rated providers are spatially concentrated or at full capacities, families may find that the next readily available seats are in lower-rated facilities.
+
+
+::: {.callout-note title="Excluding `pcap2` and `pcap3`"}
+The dataset contains three capacity fields: `pcap`,`pcap2`, `pcap3`. Only `pcap` is used here as the specific interpretations of `pcap2` and `pcap3` is unclear but was suggested to be capacity per shift. At least all daycares have the first capacity.
+:::
+
+
+
+## Using TidyCensus to Gather American Community Survey (ACS) data
+
+The ACS variable dictionary was called using `load_variables()` from the `tidycensus` packaged and searched in a similar fashion to the NHTS labels using `filter()` and `str_detect()` for keywords by its `label` and `concepts` columns theoretically related to childcare demand and structural constraints.
+
+```{r}
+#| echo: false
+
+load_variables(2023, "acs5", cache = TRUE) %>%
+  head(4) %>%
+  gt() %>%
+  tab_header(title = md("`head(4) Output of `load_variables`")) %>%
+  tab_options(
+    heading.align = "left") %>%
+  tab_style(style = cell_text(
+    weight = "bold"
+  ),
+  location = cells_title(groups = "title")
+  )
+  
+```
+
+
+### Variable Selection
+
+To contextualize accessibility scores within broader patterns of socio-demographic vulnerability, block group level characteristics were pulled from the 2023 ACS 5-year estimates using `tidycensus`. Variables were selected at the block group level to provide more granular spatial calculations. Variables were selected across four dimensions theoretically linked to childcare access barriers as well as derived in from the original study: racial and ethnic composition, economic vulnerability, family structure, and transportation constraints. Raw counts are converted to proportions to ensure comparability across block groups of different sizes. 
+
+::: {.callout-important title="Block-Group Level Caveats"}
+Although the using ACS data at the block group level can aid in in more fine tuned interpretations of needs and access, it also comes with larger Coefficients of Variances and Margin of Errors which make certain estimations less reliable. 
+:::
+
+
+```{r loading ACS variables}
+#| progress: false
+#| output: false
+
+# Census API call with selected variables 
+meck_blocks <- get_acs(
+  geography = "block group",
+  state = "NC",
+  county = "Mecklenburg",
+  year = 2023,
+  geometry = TRUE,
+  output = "wide", 
+  variables = c(
+    
+    # Racial and Ethnic Demographics
+    total_pop        = "B03002_001",
+    white_nhispanic  = "B03002_003",
+    black            = "B03002_004",
+    hispanic         = "B03002_012",
+    asian            = "B03002_006",
+    
+    # Poverty Indicators
+    total_hholds     = "B17021_001",
+    hh_poverty       = "B17021_002",
+    
+    # Family Composition
+    under_6_years    = "B23008_002",  # Used for the "demand"
+    under_6_two_p    = "B23008_003",
+    both_p_work      = "B23008_004",
+    one_parent       = "B23008_008",
+    single_d_work    = "B23008_010",
+    single_m_work    = "B23008_013",
+    
+    # Vehicle Ownership and Public Transit Use
+    no_vehicle_own   = "B25044_003", 
+    no_vehicle_ren   = "B25044_010",
+    transit_to_wrk   = "B08301_010",
+    total_wrkers     = "B08301_001")
+  
+  
+) %>%
+  
+  # Turn into a spatial object set to the correct CRS for the study area 
+  st_as_sf() %>%
+  st_transform(2264) %>%            # Transform into NC CRS
+  
+  # Remove block groups where the population is 0
+  filter(total_popE != 0) %>%
+  
+  # Create ratio categories 
+  mutate(
+    pct_black = blackE/total_popE,
+    pct_hispanic = hispanicE/total_popE,
+    pct_white   = white_nhispanicE/total_popE,
+    pct_asian = asianE/total_popE,
+    pct_poverty = hh_povertyE/total_hholdsE,
+    
+    pct_under6 = under_6_yearsE/total_popE,
+    pct_under6_two_p   = under_6_two_pE/under_6_yearsE,
+    pct_both_p_work    = both_p_workE/under_6_two_pE,
+    pct_single_p_work = (single_d_workE + single_m_workE)/one_parentE,
+    
+    pct_no_vehicle = (no_vehicle_ownE + no_vehicle_renE) /total_popE,
+    pct_transit = transit_to_wrkE/total_wrkersE,
+    
+    pop_density = total_popE/as.numeric(st_area(geometry))
+    )
+
+
+```
+
+
+### Comparing the Spatial Distribution of Children and Daycares Capacity
+
+Now that there is information pertaining to both the populations in need of daycare as well as the facilities that provide care, it is worth establishing the baseline relationship between where young children live and where licensed daycare capacity exists. The maps below compare the raw count of children under six and total licensed seats at the block group level using a shared color scale.
+
+```{r}
+
+# Spatially join populations and total capacity
+meck_blocks_final <- meck_blocks %>%
+  st_join(full_data, join = st_intersects) %>%
+  st_drop_geometry() %>%
+  group_by(GEOID) %>%
+  summarise(total_pcap = sum(pcap, na.rm = TRUE), .groups = "drop") %>%
+  right_join(meck_blocks, by = "GEOID") %>%
+  st_as_sf()
+
+
+```
+
+
+```{r}
+#| echo: false
+#| fig-width: 12
+
+
+acc_scale <- scale_fill_stepsn(
+  colors   = c("#EFE98AFF", "#9CC9AE", "#4DA9B3", "#216F8AFF", "#2F3E8F"),
+  n.breaks = 5,
+  limits   = c(0, 400),
+  na.value = "grey85",
+  name     = ""
+)
+
+p_child <- ggplot(meck_blocks_final) +
+  geom_sf(aes(fill = under_6_yearsE), color = NA) +
+  acc_scale +
+  labs(title = "Total Number of Children under 6") +
+  map_theme
+
+p_seat <- ggplot(meck_blocks_final) +
+  geom_sf(aes(fill = total_pcap), color = NA) +
+  acc_scale +
+  labs(title = "Overall Daycare capacity") +
+  map_theme
+
+p_child + p_seat +
+  plot_layout(ncol = 2, widths= c(1,1), guides = "collect") +
+  plot_annotation(
+    title = "Number of Children Under 6 Outnumber Daycare Seats in\nMost Block Groups",
+    theme = theme(plot.title = element_text(family = "Outfit", 
+                                            face = "bold", size = 18))
+  ) &
+  theme(
+    legend.position  = "bottom",
+    legend.key.width = unit(1.5, "cm"),
+    legend.text      = element_text(family = "Cabin", size = 10),
+    legend.direction = "horizontal"
+  )
+
+
+```
+
+Children under six are distributed relatively evenly across the county with notable concentrations in certain block groups. Daycare capacity, by contrast, is more spatially uneven, a small number of block groups in the urban core and select suburban corridors account for a disproportionate share of total licensed seats. This mismatch between where children are and where seats exist suggests that families on the outer rings of the county would have to travel either further inward or outward to other counties.
+
+
+## Determining Travel-Time Matrices and Other Parameters
+
+Childcare accessibility is measured using the Two-Step Floating Catchment Area (2SFCA) method, which accounts for both the supply of licensed childcare capacity and the demand from the surrounding population of children under six. The output is a ratio representing available licensed seats per child within a given travel time threshold; block groups with higher scores have more capacity available relative to local demand. Using the `floating_catchment_area()` argument from the `accessibility` package, the required inputs are as follows:
+
+- `travel_time_matrix`
+  - A data frame travel matrix that describes the costs (in this case travel time and distance) between the origins and destinations saved as `from_id`s and `to_ids`
+- `land_use_data`
+  - A data frame that contains the opportunities and origins in the study area under a shared `id` column.
+- `opportunity`
+  - A string that identifies the column in the `land_use_data` data frame referring to supply.
+- `travel_cost`
+  - A string that identifies the column in the `travel_time_matrix` that reflects the travel impedance.
+- `demand`
+  - A string that identifies the column in the `land_use_data` data frame referring to demand population.
+- `method`
+  - A string that defined the FCA method, in this case `"2SFCA"`.
+- `decay_function`
+  - A function with a `numeric vector` that determines how to weigh opportunities.
+
+Travel time is modeled using `r5r`, [which allows for rapid and realistic routing for multimodal trips across transport networks](https://cran.r-project.org/web/packages/r5r/vignettes/r5r.html). Two separate matrices are produced to reflect meaningfully different access experiences: a 15-minute drive threshold representing families with a privately owned vehicle, and a 30-minute optimal walk and transit combination threshold to represent car-free families. Thresholds are informed by the NHTS weighted median and maximum travel times established in section 2.
+
+
+### Computing Travel Time Using `r5r` and OSM
+
+Although this analysis workflow is derived from the [`r5r` `travel_time_matrix` vignette](https://cran.r-project.org/web//packages/r5r/vignettes/travel_time_matrix.html)
+Travel time matrices were computed using the `arrival_travel_time_matrix()` function from the [`r5r` package](https://ipeagit.github.io/r5r/reference/arrival_travel_time_matrix.html)
+
+
+`arrival_travel_time_matrix()` arguments:
+
+- `r5r_network`
+  - The routing network created with `build_network()`
+- `origins`
+  - `POINTsf` object or a data.frame with `id`, `lon`, and `lat` columns
+- `destinations`
+  - same input as `origins`
+- `arrival_datetime`
+  - a singular `POSIXct`(YYYY-MM-DD 00:00:00) object
+- `max_trip_duration`
+  - longest trip that can be taken as minutes, defaults to 120
+
+
+
+### Network Setup
+
+Java 21 is required by `r5r`. Follow the [rJavaEnv quick install](https://www.ekotov.pro/rJavaEnv/) if not already configured. `r5r` requires a data path to a folder that contains a OSM `.pbf` file but optionally it can also contain a General Transit Feed Specification `.zip` file and a Digital Elevation Model `.tif` file for multimodal and topology considerations.
+
+Using `osmextract`, the parameters of the `oe_find()` call are set to download the necessary `.pbf` file by study area name if it isn't already cached. The data path used to store the `.pbf` file ***must*** be referenced in `build_network()` using the `data_path` parameter to allow`r5r` to build and cache the network graph.
+
+The GTFS is the conventional format for public transit information. It's typically stored as a `.zip` file comprised of seven `.txt` files holding all the transit service's geographic, temporal, and identification information:
+
+- `agency.txt`
+- `calendar_dates.txt`
+- `routes.txt`
+- `shapes.txt`
+- `stop_times.txt`
+- `stops.txt`
+- `trips.txt`
+
+
+The GTFS feed used here was downloaded from [Mobility Database](https://mobilitydatabase.org/feeds/gtfs/mdb-2265) with the last available archive set for the Charlotte Area being from 2024. 
+
+
+::: {.callout-note title="Temporal Differences in Data"}
+The 2024 feed may reflect service changes that postdate the ACS 2023 demographic data and the facility data from August 2023, meaning the transit accessibility scores should be interpreted with caution where service restructuring may have occurred.
+:::
+
+
+```{r}
+#| output: false
+#| cache: true
+
+options(java.parameters = "-Xmx2G") # allocate memory 
+
+data_path <- "./data"
+
+# Locate the NC OSM PBF file 
+# oe_find() returns the cached path without re-downloading if already present
+pbf_file <- oe_find("North Carolina",
+                    return_pbf = TRUE,          # Set to true 
+                    return_gpkg = FALSE,
+                    download_if_missing = TRUE,
+                    quiet = TRUE)
+
+# Copy it into your project's data folder
+file.copy(
+  from = pbf_file,
+  to = file.path(data_path, "meck.osm.pbf"),
+  overwrite = TRUE
+)
+
+# Build routing network
+r5r_network <- build_network(data_path = data_path, verbose = TRUE)
+
+
+```
+
+
+
+### Preparing Origins and Destinations for `r5r`
+
+`r5r` expects origins and destinations to be point geometries with a coordinate reference system (CRS) of WGS84 (EPSG 4326) with the location identifies being set to `id` for origins and destinations. Block group centroids are used a proxy to where families would be departing from although it doesn't account for residential land-use.
+
+
+```{r}
+
+# Origins — block group centroids
+block_pts <- meck_blocks %>%
+ st_centroid() %>%
+  st_transform(crs = 4326) %>% # ESPG code of WGS84 
+  mutate(id = GEOID) 
+
+# Destinations — daycare facility points
+# ffacname used as id since it is the unique facility identifier
+daycare_pts <- full_data %>%
+ st_transform(crs = 4326) %>%
+  mutate(id = ffacname)
+
+```
+
+
+
+### Computing Travel-Time Matrices 
+
+Arrival time is set to 10:00 AM on a representative weekday to reflect morning peak drop-off conditions. Two matrices are produced, one per mode, and kept separate for the accessibility model. The `arrival_travel_time_matrix()` was chosen to reflect daycare drop-offs needing to be made typically by a certain time and to reflect the variation of departure times as a result of different distances.
+
+`r5r` handles GTFS data under-the-hood without user ever needing to unzip or open the file. In this analysis, however, the `tidytransit` package is used tp view the `calendar_dates.txt` file in order to verify the range of valid operating dates that can be put into `arrival_datetime` parameter as the time matrix package only supports ***one*** datetime input. 
+
+
+```{r}
+#| echo: false
+
+gtfs <- read_gtfs("./data/gtfs.zip")
+
+# Print GTFS calendar_date.txt heading
+gtfs$calendar_dates %>%
+  head(5) %>%
+  gt() %>%
+  tab_header(title = md("GTFS `calendar_dates.txt` Output")) %>%
+  tab_options(
+    heading.align = "left") %>%
+  tab_style(style = cell_text(
+    weight = "bold"
+  ),
+  location = cells_title(groups = "title")
+  )
+
+```
+
+
+`tidytransit` is also used to explicitly explore the GTFS `stop_times.txt` file to gather information about the duration and location of the longest transit ride to serve as a threshold for determining the input for the `maximum_duration_time` parameter of the `arrival_travel_time_matrix()` function.
+
+```{r}
+#| echo: false
+
+# Calculate trip durations from stop_times
+gtfs$stop_times %>%
+  group_by(trip_id) %>%
+    summarise(
+    departure = min(departure_time, na.rm = TRUE),
+    arrival   = max(arrival_time, na.rm = TRUE),
+    .groups   = "drop"
+  ) %>%
+  mutate(duration_min = as.numeric(arrival - departure) / 60) %>% # time stores as minutes 
+  arrange(desc(duration_min)) %>%
+  head(5) %>%
+  gt() %>%
+  tab_header(title = md("Duration of GTFS Trips by `trip_id`")) %>%
+  tab_options(
+    heading.align = "left") %>%
+  tab_style(style = cell_text(
+    weight = "bold"
+  ),
+  location = cells_title(groups = "title")
+  )
+
+```
+
+
+To ensure the spatial extent of the longest trip was limited to Mecklenburg County, each trip's route was mapped in descending duration order until a route within the county's boundaries was found.
+
+```{r}
+#| echo: false
+#| fig-width: 14
+#| fig-height: 12
+
+# Trip 1
+stops_1 <- gtfs$stop_times %>%
+  filter(trip_id == "4997424") %>%
+  left_join(gtfs$stops, by = "stop_id") %>%
+  arrange(stop_sequence) %>%
+  mutate(lon = as.numeric(stop_lon), lat = as.numeric(stop_lat)) %>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326) %>%
+  st_transform(2264)
+
+line_1 <- stops_1 %>%
+  summarise(geometry = st_combine(geometry)) %>%
+  st_cast("LINESTRING")
+
+trip1 <- ggplot() +
+  geom_sf(data = meck_blocks, fill = "grey92", color = "white") +
+  geom_sf(data = line_1,  color = "#F74414FF", linewidth = 1) +
+  geom_sf(data = stops_1, color = "#D85A30",   size = 1,   alpha = 0.8) +
+  geom_sf(data = stops_1 %>% slice(1),    color = "#1e466e", size = 3) +
+  geom_sf(data = stops_1 %>% slice(n()),  color = "#1e466e", size = 3) +
+  labs(title = "Trip 4997424") +
+  map_theme
+
+# Trip 2
+stops_2 <- gtfs$stop_times %>%
+  filter(trip_id == "4997391") %>%
+  left_join(gtfs$stops, by = "stop_id") %>%
+  arrange(stop_sequence) %>%
+  mutate(lon = as.numeric(stop_lon), lat = as.numeric(stop_lat)) %>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326) %>%
+  st_transform(2264)
+
+
+line_2 <- stops_2 %>%
+  summarise(geometry = st_combine(geometry)) %>%
+  st_cast("LINESTRING")
+
+trip2 <- ggplot() +
+  geom_sf(data = meck_blocks, fill = "grey92", color = "white") +
+  geom_sf(data = line_2,  color = "#F5D000FF", linewidth = 1) +
+  geom_sf(data = stops_2, color = "#D85A30",   size = 1,   alpha = 0.8) +
+  geom_sf(data = stops_2 %>% slice(1),    color = "#1e466e", size = 3) +
+  geom_sf(data = stops_2 %>% slice(n()),  color = "#1e466e", size = 3) +
+  labs(title = "Trip 4997391") +
+  map_theme
+
+# Trip 3
+stops_3 <- gtfs$stop_times %>%
+  filter(trip_id == "4997402") %>%
+  left_join(gtfs$stops, by = "stop_id") %>%
+  arrange(stop_sequence) %>%
+  mutate(lon = as.numeric(stop_lon), lat = as.numeric(stop_lat)) %>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326) %>%
+  st_transform(2264)
+
+line_3 <- stops_3 %>%
+  summarise(geometry = st_combine(geometry)) %>%
+  st_cast("LINESTRING")
+
+trip3 <- ggplot() +
+  geom_sf(data = meck_blocks, fill = "grey92", color = "white") +
+  geom_sf(data = line_3,  color = "#1BB6AFFF", linewidth = 1) +
+  geom_sf(data = stops_3, color = "#D85A30",   size = 1,   alpha = 0.8) +
+  geom_sf(data = stops_3 %>% slice(1),    color = "#1e466e", size = 3) +
+  geom_sf(data = stops_3 %>% slice(n()),  color = "#1e466e", size = 3) +
+  labs(title = "Trip 4997402") +
+  map_theme
+
+# Trip 4
+stops_4 <- gtfs$stop_times %>%
+  filter(trip_id == "4998035") %>%
+  left_join(gtfs$stops, by = "stop_id") %>%
+  arrange(stop_sequence) %>%
+  mutate(lon = as.numeric(stop_lon), lat = as.numeric(stop_lat)) %>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326) %>%
+  st_transform(2264)
+
+line_4 <- stops_4 %>%
+  summarise(geometry = st_combine(geometry)) %>%
+  st_cast("LINESTRING")
+
+trip4 <- ggplot() +
+  geom_sf(data = meck_blocks, fill = "grey92", color = "white") +
+  geom_sf(data = line_4,  color = "#088BBEFF", linewidth = 1) +
+  geom_sf(data = stops_4, color = "#D85A30",   size = 1,   alpha = 0.8) +
+  geom_sf(data = stops_4 %>% slice(1),    color = "#1e466e", size = 3) +
+  geom_sf(data = stops_4 %>% slice(n()),  color = "#1e466e", size = 3) +
+  labs(title = "Trip 4998035") +
+  map_theme
+
+  trip1 + trip2 + trip3 + trip4 +
+  plot_layout(ncol = 2, nrow = 2) +
+  plot_annotation(
+    title    = "Four longest CATS routes by Trip Duration",
+    caption  = "Source: CATS GTFS via Mobility Database.",
+    theme    = theme(
+      plot.title    = element_text(family = "Outfit", face = "bold", size = 20),
+      plot.subtitle = element_text(family = "Cabin",  size = 16, color = "grey40"),
+      plot.caption  = element_text(family = "Cabin",  size = 10, color = "grey50")
+    )
+  )
+
+```
+
+The longest geographically meaningful CATS route covers roughly the southern portion of Mecklenburg in approximately 70 minutes. No single scheduled trip traverses the full county in less time, meaning a threshold below 70 minutes would structurally exclude valid transit connections for families in the northern or southern portions of the county. Setting `max_trip_duration = 120` provides a conservative ceiling that captures all realistic intra-county transit trips.
+
+
+After empirically determining the last parameter, the respective travel-time matrices for car and transit trips were calculated:
+```{r}
+#| cache: true
+
+
+# Arrival time set to 10 AM on October 16th of 2024
+arrival_datetime <- as.POSIXct("2024-10-16 10:00:00", 
+                                tz = "America/New_York")
+
+
+# Drive matrix — 15-minute maximum
+# reflects NHTS weighted max travel time for vehicle-owning families
+dtm <- arrival_travel_time_matrix(
+  r5r_network = r5r_network,
+  origins = block_pts,
+  destinations = daycare_pts,
+  mode = "CAR",
+  arrival_datetime = arrival_datetime,
+  max_trip_duration = 15
+)
+
+# Transit matrix — 120-minute maximum
+# derived from NHTS vehicle travel time since transit trips can be expected to take longer
+ttm <- arrival_travel_time_matrix(
+  r5r_network = r5r_network,
+  origins = block_pts,
+  destinations = daycare_pts,
+  mode = c("WALK", "TRANSIT"),
+  arrival_datetime = arrival_datetime,
+  max_trip_duration = 120
+)
+
+```
+
+
+# Spatial Analysis 
+
+## Accessibility Modeling using `floating_catchment_area()`
+
+The 2SFCA model requires demand and supply to share a common `id` column in a single land use table. Block group GEOIDs identify demand locations and facility names identify supply locations. The model then computes, for each block group, how many licensed childcare seats are reachable within a 15-minute drive relative to the number of children under six in the surrounding catchment. A binary decay function is applied, meaning every facility within the threshold contributes its full capacity and facilities beyond it contribute nothing. The resulting score represents available seats per child. A block group scoring 1.0 has one seat available for every child within a 15-minute drive, while a score near zero indicates that reachable capacity is negligible relative to local demand. The transit accessibility model's binary threshold (30 minutes) was chosen somewhat arbitrarily as the NHTS data reflected daycare related trips tend to not occur through transit. 30 minutes was chosen as a conservative travel time for a mode that seemingly is avoided in this scenario.  
+
+Demand reminds the same across all isolated forms of care and thus remains unchanged.
+```{r}
+
+# Demand — children under 6 per block group 
+demand_df <- meck_blocks %>%
+  select(id = GEOID, 
+         demand = under_6_yearsE) %>%
+  st_drop_geometry()
+
+```
+
+
+Each subset of facilities however will need distinct inputs for the `supply` and `land use` parameters:
+```{r}
+
+# Licensed capacity across all facilities 
+all_supply <- full_data %>%
+  select(id = ffacname,
+         capacity = pcap) %>%
+  st_drop_geometry()
+
+# Highest rated capacity only 
+quality_supply <- full_data %>%
+  filter(quality_tier == "High") %>%
+  select(id = ffacname,
+         capacity = pcap) %>%
+  st_drop_geometry()
+
+# Highest rated subsidized capacity only 
+quality_subsidy <- full_data %>%
+  filter(quality_tier == "High") %>%
+  filter(SubsidyApp == "Yes") %>%
+  select(id = ffacname,
+         capacity = pcap) %>%
+  st_drop_geometry()
+
+
+# Land use that considers all facilities
+all_land_use <- bind_rows(demand_df, all_supply)
+
+# Land use that considers 4-5 star licensed facilities only
+quality_land_use <- bind_rows(demand_df, quality_supply)
+
+# Land use that considers 4-5 star licensed facilities that offer subsidized tuition only
+quality_subsidy_land_use <- bind_rows(demand_df, quality_subsidy)
+
+```
+
+
+Accessibility models then must be run for each subset of facilities per transportation mode:
+```{r}
+
+# 2SFCA accessibility score for all daycares
+# by car
+drive_access <- floating_catchment_area(
+  dtm,
+  all_land_use,
+  method = "2sfca",
+  decay_function = decay_binary(cutoff = 15),
+  opportunity = "capacity",
+  travel_cost = "total_time",
+  demand = "demand"
+)
+
+# by transit
+transit_access <- floating_catchment_area(
+  ttm,
+  all_land_use,
+  method = "2sfca",
+  decay_function = decay_binary(cutoff = 30),
+  opportunity = "capacity",
+  travel_cost = "total_time",
+  demand = "demand"
+)
+
+# Accessibility score for high rated only
+# by car
+drive_high_access <- floating_catchment_area(
+  dtm,
+  quality_land_use,
+  method = "2sfca",
+  decay_function = decay_binary(cutoff = 15),
+  opportunity = "capacity",
+  travel_cost = "total_time",
+  demand = "demand"
+)
+
+# by transit
+transit_high_access <- floating_catchment_area(
+  ttm,
+  quality_land_use,
+  method = "2sfca",
+  decay_function = decay_binary(cutoff = 30),
+  opportunity = "capacity",
+  travel_cost = "total_time",
+  demand = "demand"
+)
+
+#Accessibility score for high rated subsidized care only 
+# by car
+drive_sub_access <- floating_catchment_area(
+  dtm,
+  quality_subsidy_land_use,
+  method = "2sfca",
+  decay_function = decay_binary(cutoff = 15),
+  opportunity = "capacity",
+  travel_cost = "total_time",
+  demand = "demand"
+)
+
+# by transit
+transit_sub_access <- floating_catchment_area(
+  ttm,
+  quality_subsidy_land_use,
+  method = "2sfca",
+  decay_function = decay_binary(cutoff = 30),
+  opportunity = "capacity",
+  travel_cost = "total_time",
+  demand = "demand"
+)
+
+```
+
+
+After computing accessibility index scores, the scores need to be joined back to the block group demographics and characteristics in order to actually identify correlations and patterns. The output dataframe from the accessibility model automatically saves the scores under the string given to the `opportunity` parameter and thus needs to be renamed after each join to save each separate accessibility index:
+```{r}
+# Add access scores to ACS data to prep for PCA 
+meck_access <- meck_blocks %>%
+  
+  # accessibility scores to all daycares
+  # by car
+  left_join(drive_access, by = c("GEOID" = "id"))%>%
+  rename(car_score = capacity) %>%
+  
+  # by transit
+  left_join(transit_access, by = c("GEOID" = "id")) %>%
+  rename(transit_score = capacity) %>%
+  
+  # accessibility scores to high rated daycares
+  # by car
+  left_join(drive_high_access, by = c("GEOID" = "id")) %>%
+  rename(car_high_score = capacity) %>%
+  
+  # by transit 
+  left_join(transit_high_access, by = c("GEOID" = "id")) %>%
+  rename(transit_high_score = capacity)  %>%
+  
+  # accessibility score to high rated subsidized daycares
+  # by car
+  left_join(drive_sub_access, by = c("GEOID" = "id")) %>%
+  rename(car_sub_score = capacity) %>%
+
+  # by transit
+  left_join(transit_sub_access, by = c("GEOID" = "id")) %>%
+  rename(transit_sub_score = capacity)
+
+```
+
+# Results
+
+To assess whether restricting the supply measure to higher quality providers meaningfully changes accessibility to facilities, the distribution of car-based 2SFCA scores was examined across all three supply groups. If attribute filtering produced substantially lower scores, it would suggest that high-rated facilities are spatially concentrated in ways that leave certain block groups underserved.
+
+```{r }
+#| echo: false
+#| column: body-outset
+#| fig-width: 17
+#| fig-height: 6
+
+all_daycare <- meck_access %>%
+  st_drop_geometry() %>%
+  ggplot(aes(x = car_score)) +
+  geom_histogram(binwidth = 0.05, fill = "#66b2b2", color = "white") +
+  geom_vline(xintercept = median(meck_access$car_score, na.rm = TRUE),
+             color = "#E6C700", linetype = "dashed", linewidth = 1.5) +
+  annotate("text",
+           x     = median(meck_access$car_score, na.rm = TRUE),
+           y     = Inf,
+           label = paste0("Median: ", round(median(meck_access$car_score, na.rm = TRUE), 2)),
+           hjust = -0.1,
+           vjust = 2,
+           color = "#E6C700",
+           family = "Cabin",
+           size  = 4) +
+  labs(title = "All Daycares",
+       x     = "Licensed seats per child (15-min drive)",
+       y     = "Block groups") +
+  bar_theme
+
+high_tier <- meck_access %>%
+  st_drop_geometry() %>%
+  ggplot(aes(x = car_high_score)) +
+  geom_histogram(binwidth = 0.05, fill = "#66b2b2", color = "white") +
+  geom_vline(xintercept = median(meck_access$car_high_score, na.rm = TRUE),
+             color = "#E6C700", linetype = "dashed", linewidth = 1.5) +
+   annotate("text",
+           x     = median(meck_access$car_high_score, na.rm = TRUE),
+           y     = Inf,
+           label = paste0("Median: ", round(median(meck_access$car_high_score, na.rm = TRUE), 2)),
+           hjust = -0.1,
+           vjust = 2,
+           color = "#E6C700",
+           family = "Cabin",
+           size  = 4) +
+  labs(title = "High-Tier Daycares",
+       x     = "Licensed seats per child (15-min drive)",
+       y     = "Block groups") +
+  bar_theme
+
+high_sub <- meck_access %>%
+  st_drop_geometry() %>%
+  ggplot(aes(x = car_sub_score)) +
+  geom_histogram(binwidth = 0.05, fill = "#66b2b2", color = "white") +
+  geom_vline(xintercept = median(meck_access$car_sub_score, na.rm = TRUE),
+             color = "#E6C700", linetype = "dashed", linewidth = 1.5) +
+   annotate("text",
+           x     = median(meck_access$car_sub_score, na.rm = TRUE),
+           y     = Inf,
+           label = paste0("Median: ", round(median(meck_access$car_sub_score, na.rm = TRUE), 2)),
+           hjust = -0.1,
+           vjust = 2,
+           color = "#E6C700",
+           family = "Cabin",
+           size  = 4) +
+  labs(title = "High-Tier Daycares &\n Accept Subsidies",
+       x     = "Licensed seats per child (15-min drive)",
+       y     = "Block groups") +
+  bar_theme
+
+all_daycare + high_tier + high_sub +
+  plot_layout(ncol = 3) +
+  plot_annotation(
+    title   = "Similar Access Scores to All and High-Quality Providers",
+    theme   = theme(plot.title = element_text(family = "Outfit", 
+                                              face = "bold", size = 24))
+  )
+
+```
+The median accessibility score drops modestly from 0.54 for all daycares to 0.48 for high-tier only and 0.28 for high-tier subsidized facilities, but the overall shape of the distribution remains similar across all three. This suggests that high-rated providers are distributed broadly enough across the county that restricting to quality tiers does not dramatically reshape who has spatial access, though the rightward tail shrinking in the subsidized scores indicates that the block groups with the highest overall access do lose some of that advantage when only subsidy-accepting facilities are counted. 
+
+
+The same distributional comparison was repeated for transit-based accessibility scores to assess whether car-free households face different access than vehicle-owning ones. Given Charlotte's limited transit network, scores are expected to be lower overall and more concentrated near zero.
+```{r}
+#| echo: false
+#| column: body-outset
+#| fig-width: 17
+#| fig-height: 6
+
+meck_access <- meck_access %>%
+  mutate(transit_score = if_else(is.infinite(transit_score), NA_real_, transit_score)) %>%
+  mutate(transit_high_score = if_else(is.infinite(transit_high_score), NA_real_, transit_high_score)) %>%
+  mutate(transit_sub_score = if_else(is.infinite(transit_sub_score), NA_real_, transit_sub_score       ))
+
+all_daycares <- meck_access %>%
+  st_drop_geometry() %>%
+  ggplot(aes(x = transit_score)) +
+  geom_histogram(binwidth = 0.5, fill = "#66b2b2", color = "white") +
+  geom_vline(xintercept = median(meck_access$transit_score, na.rm = TRUE),
+             color = "#E6C700", linetype = "dashed",linewidth = 1.5 ) +
+   annotate("text",
+           x     = median(meck_access$transit_score, na.rm = TRUE),
+           y     = Inf,
+           label = paste0("Median: ", round(median(meck_access$transit_score, na.rm = TRUE), 2)),
+           hjust = -0.1,
+           vjust = 2,
+           color = "#E6C700",
+           family = "Cabin",
+           size  = 4) +
+  labs(title = "All Daycares",
+       x     = "Licensed seats per child (30-min transit trip)",
+       y     = "Block groups") +
+  bar_theme
+
+high_tier <- meck_access %>%
+  st_drop_geometry() %>%
+  ggplot(aes(x = transit_high_score)) +
+  geom_histogram(binwidth = 0.5, fill = "#66b2b2", color = "white") +
+  geom_vline(xintercept = median(meck_access$transit_high_score, na.rm = TRUE),
+             color = "#E6C700", linetype = "dashed", linewidth = 1.5 ) +
+    annotate("text",
+           x     = median(meck_access$transit_high_score, na.rm = TRUE),
+           y     = Inf,
+           label = paste0("Median: ", round(median(meck_access$transit_high_score, na.rm = TRUE), 2)),
+           hjust = -0.1,
+           vjust = 2,
+           color = "#E6C700",
+           family = "Cabin",
+           size  = 4) +
+  labs(title = "High Tier Daycares Only",
+       x     = "Licensed seats per child (30-min transit trip)",
+       y     = "Block groups") +
+  bar_theme
+
+high_sub <- meck_access %>%
+  st_drop_geometry() %>%
+  ggplot(aes(x = transit_sub_score)) +
+  geom_histogram(binwidth = 0.5, fill = "#66b2b2", color = "white") +
+  geom_vline(xintercept = median(meck_access$transit_sub_score, na.rm = TRUE),
+             color = "#E6C700", linetype = "dashed", linewidth = 1.5 ) +
+    annotate("text",
+           x     = median(meck_access$transit_sub_score, na.rm = TRUE),
+           y     = Inf,
+           label = paste0("Median: ", round(median(meck_access$transit_sub_score, na.rm = TRUE), 2)),
+           hjust = -0.1,
+           vjust = 2,
+           color = "#E6C700",
+           family = "Cabin",
+           size  = 4) +
+  labs(title = "High Tier & Accept Subsidies",
+       x     = "Licensed seats per child (30-min transit trip)",
+       y     = "Block groups") +
+  bar_theme
+
+all_daycares + high_tier + high_sub +
+  plot_layout(ncol = 3, guides = "collect") + 
+  plot_annotation(
+    title   = "Similar Access Scores to All and High-Quality Providers",
+    theme   = theme(plot.title = element_text(family = "Outfit", 
+                                              face = "bold", size = 24))
+  )
+
+```
+
+All hypothesized, transit-based scores are substantially more compressed than their car-based counterparts. More notably, the extreme right skew and near-zero concentration across all three distributions indicates that for most block groups, transit access to daycare is low and effectively nonexistent within a 30-minute trip when it comes to subsidized care. Taken together, the car and transit distributions suggest that mode of transportation is a consequential determinant of effective access, especially if surrounded by car-dependent families who have a wider reach of access.
+
+The choropleth maps below plot car-based 2SFCA scores across all three supplies on a shared scale to allowing direct comparison of spatial patterns across attributes.
+```{r}
+#| echo: false
+#| fig-width: 12
+
+
+acc_palette <- scale_fill_gradientn(
+  colors   = c("#EFE98AFF", "#9CC9AE", "#4DA9B3", "#216F8AFF", "#2F3E8F"),
+  na.value = "grey80",
+  limits   = c(0, 1),
+  breaks   = c(0, 0.25, 0.5, 0.75, 1),
+  labels   = c("0", "0.25", "0.5", "0.75", "1"),
+  name     = "Accessibility\nScore"
+)
+
+car_all <- ggplot(meck_access) +
+  geom_sf(aes(fill = car_score), color = NA) +
+  acc_palette +
+  labs(title = "All Daycares") +
+  map_theme
+
+car_high <- ggplot(meck_access) +
+  geom_sf(aes(fill = car_high_score), color = NA) +
+  acc_palette +
+  labs(title = "High Tier Only") +
+  map_theme
+
+car_sub <- ggplot(meck_access) +
+  geom_sf(aes(fill = car_sub_score), color = NA) +
+  acc_palette +
+  labs(title = "High Tier + Subsidy") +
+  map_theme
+
+car_all + car_high + car_sub +
+  plot_layout(ncol = 3, guides = "collect") +
+  plot_annotation(
+    title = "Car-Based Daycare Accessibility Index Score",
+    theme = theme(plot.title = element_text(
+      family = "Outfit", face = "bold", size = 18))
+  ) &
+  theme(legend.position = "bottom")
+
+
+```
+The all-daycares map shows relatively broad car-based access across the county with the highest scores concentrated in the urban core and inner suburban ring, reflecting the radial pattern visualized in the overall daycare capacity plot. When the supply measure is restricted to high-tier and subsidized providers, the pattern shrinks respectively to the county's inner core. 
+
+
+The visualization of transit-based accessibility reveals the spatial dimension of what the histograms suggested, that Charlotte's transit network produces a fundamentally different and more unequal access landscape than car-based travel. 
+```{r}
+#| echo: false
+#| fig-width: 12
+
+acc_palette <- scale_fill_gradientn(
+  colors   = c("#EFE98AFF", "#9CC9AE", "#4DA9B3", "#216F8AFF", "#2F3E8F"),
+  na.value = "grey80",
+  limits   = c(0, 3),
+  breaks   = c(0, 0.75, 1.5, 2.25, 3),
+  labels   = c("0", "0.75", "1.5", "2.25", "3"),
+  name     = "Accessibility\nScore"
+)
+
+transit_all <- ggplot(meck_access) +
+  geom_sf(aes(fill = transit_score), color = NA) +
+  acc_palette +
+  labs(title = "All Daycares") +
+  map_theme
+
+transit_high <- ggplot(meck_access) +
+  geom_sf(aes(fill = transit_high_score), color = NA) +
+  acc_palette +
+  labs(title = "High Tier Only") +
+  map_theme
+
+transit_sub <- ggplot(meck_access) +
+  geom_sf(aes(fill = transit_sub_score), color = NA) +
+  acc_palette +
+  labs(title = "High Tier + Subsidy") +
+  map_theme
+
+transit_all + transit_high + transit_sub +
+  plot_layout(ncol = 3, guides = "collect") +
+  plot_annotation(
+    title = "Transit-Based Daycare Accessibility",
+    theme = theme(plot.title = element_text(
+      family = "Outfit", face = "bold", size = 18))
+  ) &
+  theme(legend.position = "bottom")
+```
+Where car-based scores showed broad mid-range access across much of the county, the transit maps are dominated by yellow, indicating near-zero accessibility for the majority of block groups regardless of which supply definition is used. 
+
+## Determining Relationships between Accessibility and Vulnerability
+
+To examine whether accessibility disadvantage clusters systematically with demographic vulnerability, a Principal Component Analysis (PCA) was conducted on a selected set of block group level socio-demographic characteristics alongside the subsidized car-based accessibility score. Variables were iteratively tested through a manual permutation and sensitivity analysis, shuffling theoretically relevant inputs and evaluating the resulting explained variance, until the combination produced a balance between cumulative variance and number of variables. 
+
+```{r}
+
+# Select final variable set identified through manual permutation analysis
+pca_input <- meck_access %>%
+  st_drop_geometry() %>%
+  select(pct_black, pct_hispanic, pct_white, pct_no_vehicle, pct_poverty,
+   pct_transit, pop_density, car_sub_score) %>%
+  drop_na() %>% # Drop rows with missing values
+  scale() # Standardize all variables to mean 0, sd 1
+
+```
+
+Given the uniformly low transit accessibility scores, the PCA proceeds using the car-based subsidized accessibility score (`car_sub_score`) rather than a transit equivalent. The transit findings are therefore interpreted as a standalone equity result: for car-free households, meaningful access to quality subsidized care is structurally unavailable regardless of which block group they occupy, a constraint that no accessibility model needs to decompose further. Since this analysis is concerned with access to the specific form of care most relevant to vulnerable populations, high-quality facilities that accept subsidy applications, rather than general access to all licensed providers, the other accessibility scores are also excluded. 
+
+
+PCA is performed using the `FactoMineR` package via the `PCA()` function. 
+The visualization and interpretation of PCA outputs follows the workflow outlined in [Selva Prabhakaran's PCA in R guide](@prabhakaranPCA), which covers dimension reduction, structure visualization, and extraction of coordinates, eigenvalues, and variable loadings from PCA result objects. The referenced documentation uses the `prcomp()` base R function however the methodology is the adapted here for `FactoMineR` outputs. 
+
+Setting `graph = FALSE` suppresses the default base R output plots, which are replaced by the styled visualizations below. Results are stored as a named list object accessible via `$`. 
+
+::: {.callout-important title="Component Versus Dimension"}
+Throughout this document the terms dimension and principal component are used interchangeably. The distinction is purely one of convention, `FactoMineR` uses "dimension" while `prcomp()` and general PCA literature often use "principal component." Both refer to the same mathematical output: an uncorrelated axis of variation extracted from the original variables, ordered from most to least explanatory.
+:::
+
+```{r}
+# Store results for manual visualization below
+PCA_result <- PCA(pca_input, graph = FALSE)
+```
+
+
+Prabhakaran suggests three criteria to cross-reference for determining how many components rather than individual variables to retain:
+
+- Kaiser rule
+  - When using scaled PCA, retain every PC whose eigen value is at least 1.
+- Cumulative-variance rule 
+  - Retain components who's cumulative variance explains 80% or 90% of total variance.
+- Scree elbow
+  - After plotting eigenvalues against the number of components, retain the components before the visible "elbow" where the curve flattens.
+
+
+
+The scree plot below visualizes the variance explained by each principal component. Components are ordered by their explanatory power and the cumulative line shows how quickly additional components contribute diminishing returns. The retention of components to carry forward for interpretation was based on identifying where the gains in explained variance visually plateaus.
+
+```{r}
+#| fig-width: 12
+
+# Visualize variance explained per component to assess retention threshold
+fviz_eig(PCA_result, 
+         addlabels  = TRUE, 
+         ncp        = 8,
+         barfill    = "#329999",
+         barcolor   = "white",
+         linecolor  = "#216F8AFF") +
+  ylim(0, 45) +
+  labs(
+    title = "Variance Explained by Each Principal Component",
+    x     = "Dimension",
+    y     = "% of Variance Explained"
+  ) +
+  bar_theme
+
+```
+The scree plot shows a gradual decline in variance explained across components rather than a sharp elbow, which is common when variables share moderate rather than strong correlations.
+
+To further quantify which components are significant, setting the PCA result to `$eig` reveals the eigenvalues for each component. Eigenvalues measure the amount of variance captured by each dimension; a higher eigenvalue means the dimension explains more of the total variation across block groups. An eigenvalue of 1 means a dimension explains exactly as much variance as a single original variable would on its own, which is why the Kaiser rule uses this as the minimum retention threshold. Dimensions with eigenvalues below 1 are considered to contribute less information than any individual input variable and are therefore not worth retaining. In addition to eigenvalues, `$eig` also displays the cumulative percentage of variance explained by each added component in descending order. 
+
+The two criteria therefore serve different purposes, Kaiser evaluates each dimension independently while cumulative variance evaluates the retained solution as a whole. A defensible retention decision satisfies both: each retained dimension has an eigenvalue above 1 and the cumulative variance of the retained set approaches or exceeds 80%.
+
+
+```{r}
+PCA_result$eig %>%
+  as.data.frame() %>%
+  rownames_to_column("Component") %>%
+  gt()%>%
+  tab_header(title = md("Eigenvalues and Variance Percentages of PCA Components")) %>%
+  tab_options(
+    heading.align = "left") %>%
+  tab_style(style = cell_text(
+    weight = "bold"
+  ),
+  location = cells_title(groups = "title")
+  )
+
+```
+
+Three components satisfy the Kaiser criterion with eigenvalues exceeding 1 and collectively explaining 67.2% of total variance. The fourth component falls just below the threshold at 0.93 but would push the explained variance to just below the 80% threshold at 78.8%. The first three components are focused on for the remainder of this analysis.
+
+After determining what components to retain, the next step is understanding which variables drive the components variation and to what degree. The correlation table below, extracted via `$var$cor`, shows the correlation between each original variable and each component. Values close to 1 or -1 indicate a strong relationship between the variable and that dimension, while values near 0 indicate the variable contributes little.
+
+```{r}
+PCA_result$var$cor %>%
+  as.data.frame() %>%
+  rownames_to_column("Variable") %>%
+  gt()%>%
+  tab_header(title = md("Variables and their Correlations by Components")) %>%
+  tab_options(
+    heading.align = "left") %>%
+  tab_style(style = cell_text(
+    weight = "bold"
+  ),
+  location = cells_title(groups = "title")
+  )
+```
+
+The correlation table reveals that component 1's variance is significantly explained by  socio-economic demographics such as race and poverty status, with a strong positive relationship between the percentage black and the percentage of household poverty while it holds a strong negative relationship with the percentage white. 
+
+I found component 3 to be interesting as it reflects that the percentage hispanic and the population density are strongly positively correlated suggesting that hispanic residents tend to live in denselt populated block groups. Dimension 3 provides moderately negative correlation between car subsidy access score and percentage hispanic, suggesting car access to subsidized high quality daycares for predominantly hispanic block groups is low.
+
+The correlation table confirms that component 1 is primarily a socioeconomic and racial disadvantage axis, the percentage of Black residents and household poverty rate load strongly and positively while the percentage of white residents loads strongly negative, reflecting the persistent spatial intersection between racial composition and economic vulnerability. This dimension alone accounts for 35.2% of total variance.
+
+Component 3 is perhaps the most analytically interesting. The strong positive correlation between the percentage of Hispanic residents and population density suggests that Hispanic families in Mecklenburg County are concentrated in denser, more urban block groups. 
+
+In component 2, the moderate negative correlation between Hispanic composition and the subsidized car-based accessibility score on this same dimension indicates that despite this inferrable urban concentration Hispanic block groups tend to have lower access to high-quality subsidized care by car. 
+
+The inclusion of population density in this dimension also raises a question that falls outside the scope of this analysis but is worth noting for future research: dense, predominantly Hispanic block groups may have lower formal childcare utilization not because of spatial barriers alone, but because of multi-generational and community-based childcare arrangements, such as grandparental care, that provide informal, cost-free alternatives to licensed facilities. If such arrangements are prevalent, formal datasets and spatial accessibility may not be able to capture a cultural approaches to childcare.
+
+
+# Conclusion 
+
+This analysis set out to extend the landscape assessment conducted by @potochnick2024 by moving beyond a simple mapping of facility locations toward a more nuanced measure of effective childcare accessibility that accounts for supply quality, subsidy acceptance, and mode of transportation simultaneously.
+
+Three findings emerge consistently across the distributional and spatial analyses. First, restricting the supply measure to high-quality providers does not dramatically reshape the accessibility surface for car-owning families; high-rated facilities are distributed broadly enough across the county that quality filtering produces modest rather than severe score reductions. This suggests that for vehicle-owning households, high-rated providers have reasonable geographic coverage across the county.Second, filtering to subsidized high-quality care does produce meaningful score reductions, 
+particularly in peripheral block groups, indicating that families who depend on subsidies face a more constrained set of realistic options than raw facility counts would suggest. Third and most starkly, transit-based accessibility to any form of quality subsidized care is effectively nonexistent for the majority of Mecklenburg County block groups, a finding that points directly to the structure of Charlotte's transit network as a barrier that operates independently of facility quality or distribution.
+
+The PCA corroborates these spatial findings by confirming that race and poverty status is the dominant axis of variation at the block group level, accounting for 35% of total variance on its own. That subsidized accessibility loads on a partially independent dimension suggests that 
+while race and access are correlated they are not spatially identical and thus may be related to an approach that isn't spatial as the original study suggested.
+

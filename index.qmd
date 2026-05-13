@@ -1,0 +1,47 @@
+---
+title: "Mecklenburg County Childcare Accessibility Capstone"
+format:
+  html:
+    toc: false
+---
+
+# Overview
+
+This project examines spatial accessibility to childcare in Mecklenburg County,
+North Carolina using a Two-Step Floating Catchment Area (2SFCA) framework.
+Accessibility scores were modeled across multiple dimensions of effective access,
+including licensed capacity, provider quality, subsidy acceptance, and
+transportation mode.
+
+The analysis integrates:
+- ACS demographic data
+- OpenStreetMap road networks
+- CATS GTFS transit feeds
+- NC childcare facility licensing data
+- Multimodal travel time modeling using `r5r`
+
+# Key Findings
+
+- Accessibility declines substantially when restricting supply to subsidized
+  high-quality providers.
+- Transit-based access to childcare is limited across much of Mecklenburg
+  County.
+- PCA results suggest childcare accessibility operates partly independently
+  from broader socioeconomic vulnerability patterns.
+
+# Report
+
+- [Full Report](report.html)
+
+# Reproducibility
+
+The workflow was developed in Quarto using reproducible spatial analysis
+pipelines in R.
+
+Core packages include:
+- `sf`
+- `tidyverse`
+- `r5r`
+- `FactoMineR`
+- `ggplot2`
+
