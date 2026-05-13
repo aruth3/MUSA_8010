@@ -1,0 +1,5 @@
+[1,"==> quarto preview index.qmd --to html --no-watch-inputs --no-browse\n\n"]
+[1,"pandoc \n  to: html\n  output-file: index.html\n  standalone: true\n  title-prefix: Mecklenburg Childcare Accessibility Capstone\n  section-divs: true\n  html-math-method: mathjax\n  wrap: none\n  default-image-extension: png\n  toc: false\n  variables: {}\n  \nmetadata\n  document-css: false\n  link-citations: true\n  date-format: long\n  lang: en\n  theme: lux\n  title: Mecklenburg County Childcare Accessibility Capstone\n  \n"]
+[1,"Output created: docs\\index.html\n\nPreparing to preview\n"]
+[1,"\nWatching files for changes\nBrowse at http://localhost:3430/\nListening on http://127.0.0.1:3430/\n"]
+[1,"GET: /\n"]
