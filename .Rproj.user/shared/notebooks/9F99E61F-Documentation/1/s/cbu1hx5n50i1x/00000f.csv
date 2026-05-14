@@ -1,0 +1,5 @@
+"0",""
+"0","# Load analytically relevant NHTS 2022 codebooks before data "
+"0","hhold <- read_excel(""./data/codebook.xlsx"", sheet=""Household"") "
+"0","trips <- read_excel(""./data/codebook.xlsx"", sheet=""Trip"")      "
+"0","                                                                "

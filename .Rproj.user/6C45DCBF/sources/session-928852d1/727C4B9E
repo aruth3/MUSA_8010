@@ -3,7 +3,7 @@
     "path": "~/MUSA_8010/Documentation.qmd",
     "project_path": "Documentation.qmd",
     "type": "quarto_markdown",
-    "hash": "3150623077",
+    "hash": "0",
     "contents": "",
     "dirty": false,
     "created": 1778670139767.0,
@@ -12,15 +12,15 @@
     "properties": {
         "source_window_id": "",
         "Source": "Source",
-        "cursorPosition": "80,0",
-        "scrollLine": "69"
+        "cursorPosition": "35,5",
+        "scrollLine": "29"
     },
     "folds": "",
-    "lastKnownWriteTime": 1778670204,
+    "lastKnownWriteTime": 1778720303,
     "encoding": "UTF-8",
     "collab_server": "",
     "source_window": "",
-    "last_content_update": 1778670204206,
+    "last_content_update": 1778720303557,
     "read_only": false,
     "read_only_alternatives": []
 }
