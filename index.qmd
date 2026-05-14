@@ -1,26 +1,47 @@
 ---
-title: "Mecklenburg County Childcare Accessibility Capstone"
+title: ""
 format:
   html:
     toc: false
+bibliography: references.bib
 ---
 
-# Overview
+::: {column-body-outset}
+::: {.text-center}
+## [Acknowledgements]{.text-body-secondary}
+:::
 
-This project examines spatial accessibility to childcare in Mecklenburg County,
-North Carolina using a Two-Step Floating Catchment Area (2SFCA) framework.
-Accessibility scores were modeled across multiple dimensions of effective access,
-including licensed capacity, provider quality, subsidy acceptance, and
-transportation mode.
+::: {.text-body-tertiary}
+This site documents a spring 2026 Capstone Project completed as part of the Master of Urban Spatial Analytics (MUSA) Program at the University of Pennsylvania's Weitzman School of Design. This work was completed under the supervision and guidance of Dr. Eric Delmelle, a co-author of @potochnick2024 and Associate Professor and Associate Chair of Biostatistics & Health Data Science at Lehigh University Associate Professor and Associate Chair of the Department of Biostatistics & Health Data Science at Lehigh University, whose contributions to the original landscape assessment methodological guidance was crucial throughout the development of this project.
+:::
+:::
 
-The analysis integrates:
-- ACS demographic data
-- OpenStreetMap road networks
-- CATS GTFS transit feeds
-- NC childcare facility licensing data
-- Multimodal travel time modeling using `r5r`
 
-# Key Findings
+## Overview
+
+This project extends off the prior landscape analysis conducted by @potochnick2024 through the University of North Carolina at Charlotte's ***Social Aspects of Health Initiative (SAHI)***, an interdisciplinary, community-centered research partnership between university faculty, students, and key Charlotte-area community stakeholders.
+
+The original study's strived to understand the geographic, socioeconomic and cultural barriers that contributed to the under-utilization of subsidized Prenatal to Early Childhood Education (ECE) services among eligible Black and Hispanic families in the Charlotte-Mecklenburg area of North Carolina @potochnick2024.
+
+The study responded to calls from community leaders for targeted research into child development disparities affecting low-income Black and Latino families in Charlotte-Mecklenburg. ECE ulitization is significant as it is a tool meant to promote long-term economic mobility and Charlotte was placed last for intergenerational economic mobility out of the 50 largest U.S. cities @potochnick2024.
+
+The study was separated into three separate projects, the second being a service landscape assessment meant to create an inventory of services for children age 0 to 3 years old and analyze accessibility with additional insights provided by low-income providers and families. The study concluded that that accessibility did not differ significantly spatially or across socioeconomic statuses @potochnick2024. 
+
+This project aims to provide a ***reproducible documentation*** that quantify these findings through a targeted spatial analysis, shifting the focus from where facilities and populations are located to the real-world barriers and decisions that shape whether families actually use them. Specifically, the analysis measures transit and car-based accessibility to ECE daycare facilities for children under 6, weighed against facility capacity and filtered by quality ratings and subsidy acceptance.
+
+
+## Methods
+To perform this targeted analysis, this project uses:
+
+- A Two-Step Floating Catchment Area (2SFCA) model via the `accessibility` package, which generates an accessibility index by accounting for provider-to-population ratios across space
+
+- A travel-time matrix via the `r5r` package, which simulates realistic transit and driving behavior across street networks
+
+- A Principal Component Analysis (PCA) using `FactoMineR` that combines Census data from `tidycensus` to capture correlations between accessibility scores and  vulnerability indicators
+
+
+
+## Key Findings
 
 - Accessibility declines substantially when restricting supply to subsidized
   high-quality providers.
@@ -29,19 +50,8 @@ The analysis integrates:
 - PCA results suggest childcare accessibility operates partly independently
   from broader socioeconomic vulnerability patterns.
 
-# Report
+## Report
 
 - [Full Report](Accessibility_Report.qmd)
 
-# Reproducibility
-
-The workflow was developed in Quarto using reproducible spatial analysis
-pipelines in R.
-
-Core packages include:
-- `sf`
-- `tidyverse`
-- `r5r`
-- `FactoMineR`
-- `ggplot2`
 

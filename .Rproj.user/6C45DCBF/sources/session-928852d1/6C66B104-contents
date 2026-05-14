@@ -3,9 +3,12 @@ project:
   output-dir: docs
 
 website:
-  title: "Mecklenburg Childcare Accessibility Capstone"
+  title: "Daycare Accessibility in Mecklenburg County"
+  description: "Spring 2026 Capstone Project for Master of Urban Spatial Analytics Program at the University of Pennslyvania's Weitzman School of Design"
   navbar:
-    left:
+    search: false
+    background: "#f8f9fa"
+    right:
       - href: index.qmd
         text: Home
       - href: Accessibility_Report.qmd
@@ -19,4 +22,3 @@ format:
     theme: lux
     toc: true
     code-fold: true
-
